@@ -37,7 +37,7 @@ impl CsvData {
             .collect();
 
         for _ in 0..vec.len() % line_width {
-            vec.push(" ".to_string());
+            vec.push("".to_string());
         }
 
         CsvData {
@@ -46,7 +46,41 @@ impl CsvData {
             line_width,
         }
     }
+    pub fn from_text(data: String, delimiter: char) -> Self {
+        let lines: Vec<String> = data
+            .split('\n')
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
 
+        let line_width = lines
+            .iter()
+            .map(|s| s.split(delimiter).count())
+            .max()
+            .unwrap();
+
+        let result_data: Vec<String> = lines
+            .into_iter()
+            .flat_map(|s| {
+                let mut curr_line = s
+                    .split(delimiter)
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>();
+
+                for _ in 0..(line_width - curr_line.len()) {
+                    curr_line.push("".to_string());
+                }
+                curr_line
+            })
+            .collect();
+
+        CsvData {
+            data: result_data,
+            delimiter,
+            line_width,
+        }
+    }
     pub fn to_file(&self, file_name: String) -> std::io::Result<()> {
         let mut file = File::create(file_name)?;
 
@@ -65,18 +99,24 @@ impl CsvData {
     pub fn from_file<S: AsRef<str>>(filename: S, delimiter: char) -> Result<Self, Box<dyn Error>> {
         match fs::read_to_string(filename.as_ref()) {
             Ok(file) => {
-                let mut line_width = 0;
                 let lines: Vec<String> = file
                     .split('\n')
                     .map(|s| s.to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-
+                let line_width = lines
+                    .iter()
+                    .map(|s| s.matches(delimiter).count() + 1)
+                    .max()
+                    .unwrap();
                 let csv_data = lines
                     .iter()
                     .flat_map(|v| {
-                        line_width = max(line_width, v.matches(delimiter).count() + 1);
-                        v.split(delimiter)
+                        let mut split: Vec<&str> = v.split(delimiter).collect();
+                        for _ in 0..(line_width - split.len()) {
+                            split.push("");
+                        }
+                        split
                     })
                     .map(|s| s.to_string())
                     .collect();
@@ -196,12 +236,34 @@ impl CsvData {
             let mut line = v.join(&self.delimiter.to_string());
             let abs = (v.len() as i32 - width as i32).abs();
             for _ in 0..abs {
-                line += ", ";
+                line += ",";
             }
 
             *acc.entry(line).or_insert(0) += 1;
             acc
         })
+    }
+
+    pub fn transpose(&self) -> CsvData {
+        let data = self.data.clone();
+        let num_lines = data.len() / self.line_width;
+        let mut matrix = vec![vec![""; num_lines]; self.line_width];
+
+        for i in 0..data.len() {
+            let (x, y) = (i / self.line_width, i % self.line_width);
+
+            matrix[y][x] = &*data[i];
+        }
+
+        let result_data: Vec<String> = matrix
+            .into_iter()
+            .flat_map(|v| v.iter().map(|&s| String::from(s)).collect::<Vec<String>>())
+            .collect();
+        CsvData {
+            data: result_data,
+            line_width: num_lines,
+            delimiter: self.delimiter,
+        }
     }
 }
 
@@ -429,6 +491,53 @@ mod tests {
     }
 
     #[test]
+    fn test_from_text() {
+        let expected_str = vec!["test", "", "", "test1", "test2", "test3", "test3", "", ""];
+        let expected_str = expected_str.into_iter().map(|s| s.to_string()).collect();
+        let expect = CsvData {
+            data: expected_str,
+            delimiter: ',',
+            line_width: 3,
+        };
+
+        let text = "test\ntest1,test2,test3\ntest3".to_string();
+        let tmp = CsvData::from_text(text, ',');
+        assert_eq!(tmp, expect);
+    }
+
+    #[test]
+    fn test_from_text_even() {
+        let expected_str = vec![
+            "test", "test2", "test3", "test1", "test2", "test3", "test3", "test4", "test5",
+        ];
+        let expected_str = expected_str.into_iter().map(|s| s.to_string()).collect();
+        let expect = CsvData {
+            data: expected_str,
+            delimiter: ',',
+            line_width: 3,
+        };
+
+        let text = "test,test2,test3\ntest1,test2,test3\ntest3,test4,test5".to_string();
+        let tmp = CsvData::from_text(text, ',');
+        assert_eq!(tmp, expect);
+    }
+
+    #[test]
+    fn test_from_text_empty() {
+        let expected_str = vec![""];
+        let expected_str = expected_str.into_iter().map(|s| s.to_string()).collect();
+        let expect = CsvData {
+            data: expected_str,
+            delimiter: ',',
+            line_width: 1,
+        };
+
+        let text = "".to_string();
+        let tmp = CsvData::from_text(text, ',');
+        assert_eq!(tmp, expect);
+    }
+
+    #[test]
     fn test_iterator() {
         let expect = vec!["test", "te2", "test3"];
         let tmp = CsvData::from_raw_string("test,test2,test3".to_string(), ',', 2);
@@ -482,12 +591,30 @@ mod tests {
     }
 
     #[test]
+    fn test_from_input_output_from_text() {
+        let expected_str = vec![
+            "test", " ", " ", "test1", "test2", "test3", "test3", " ", " ",
+        ];
+        let expected_str = expected_str.into_iter().map(|s| s.to_string()).collect();
+        let expect = CsvData {
+            data: expected_str,
+            delimiter: ',',
+            line_width: 3,
+        };
+        let tmp2 = expect.clone();
+        fs::remove_file("testdata/testinputoutputfromtext.csv");
+        tmp2.to_file(String::from("testdata/testinputoutputfromtext.csv"));
+        let result = CsvData::from_file("testdata/testinputoutputfromtext.csv", ',').unwrap();
+        assert_eq!(expect, result)
+    }
+
+    #[test]
     fn test_union() {
         let tmp = CsvData::from_raw_string("test,test2,test3".to_string(), ',', 2);
         let tmp2 =
             CsvData::from_raw_string("test,test2,test3,test4,test5,test6".to_string(), ',', 2);
         let expected = CsvData::from_raw_string(
-            "test,test2,test,test2,test3, ,test3,test4,test5,test6".to_string(),
+            "test,test2,test,test2,test3,,test3,test4,test5,test6".to_string(),
             ',',
             2,
         );
@@ -501,7 +628,7 @@ mod tests {
         let tmp2 =
             CsvData::from_raw_string("test,test2,test3,test4,test5,test6".to_string(), ',', 2);
         let expected = CsvData::from_raw_string(
-            " , ,test,test2,test,test2,test3, ,test3,test4,test5,test6".to_string(),
+            " , ,test,test2,test,test2,test3,,test3,test4,test5,test6".to_string(),
             ',',
             2,
         );
@@ -515,7 +642,7 @@ mod tests {
         let tmp2 =
             CsvData::from_raw_string("test,test2,test3,test4,test5,test6".to_string(), ',', 4);
         let expected = CsvData::from_raw_string(
-            "test,test2,test3, ,test,test2,test3,test4,test5,test6, , ".to_string(),
+            "test,test2,test3,,test,test2,test3,test4,test5,test6,,".to_string(),
             ',',
             4,
         );
@@ -529,7 +656,7 @@ mod tests {
         let tmp2 =
             CsvData::from_raw_string("test,test2,test3,test4,test5,test6".to_string(), ',', 1);
         let expected = CsvData::from_raw_string(
-            "test, ,test,test2,test2, ,test3, ,test3, ,test4, ,test5, ,test6, ".to_string(),
+            "test, ,test,test2,test2, ,test3,,test3, ,test4, ,test5, ,test6, ".to_string(),
             ',',
             2,
         );
@@ -717,6 +844,46 @@ mod tests {
         let result = difference_all(&vec);
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_transpose_square() {
+        let tmp = CsvData::from_raw_string(
+            "test,test2,adsaf\
+            ,test3,test4,asdas,\
+            test5,test6,test7"
+                .to_string(),
+            ',',
+            3,
+        );
+        let expected = CsvData::from_raw_string(
+            "test,test3,test5,test2,test4,test6,adsaf,asdas,test7".to_string(),
+            ',',
+            3,
+        );
+
+        assert_eq!(tmp.transpose(), expected);
+    }
+
+    #[test]
+    fn test_transpose_not_square() {
+        let tmp = CsvData::from_raw_string(
+            "test,test2\
+                ,adsaf,test3\
+                ,test4,asdas,\
+                test5,test6,\
+                test7"
+                .to_string(),
+            ',',
+            2,
+        );
+        let expected = CsvData::from_raw_string(
+            "test,adsaf,test4,test5,test7,test2,test3,asdas,test6,".to_string(),
+            ',',
+            5,
+        );
+
+        assert_eq!(tmp.transpose(), expected);
     }
 
     #[test]
